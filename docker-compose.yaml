@@ -1,0 +1,39 @@
+services:
+  frankenwplite:
+    build: .
+    volumes:
+      - ./app:/var/www/html
+    ports:
+      - "8099:80" # HTTP
+    environment:
+      # if SERVER_NAME is blank it will just publish on port 80 and can be reverse proxied
+      - SERVER_NAME=${FPL_SERVER_NAME:-:80}
+      - WORDPRESS_DB_HOST=db
+      - WORDPRESS_DB_USER=user
+      - WORDPRESS_DB_PASSWORD=nopasswordforsqlite
+      - WORDPRESS_DB_NAME=${FPL_DB_NAME:-frankenwplite}
+      - WORDPRESS_DEBUG=${FPL_WP_DEBUG:-false}
+      - WORDPRESS_TABLE_PREFIX=${FPL_DB_TABLE_PREFIX:-wp_}
+      - CACHE_LOC=/var/www/html/wp-content/cache
+      - TTL=${FPL_TTL:-80000}
+      - PURGE_PATH=/__cache/purge
+      - PURGE_KEY=${FPL_PURGE_KEY:-}
+      - BYPASS_HOME=${FPL_BYPASS_HOME:-false}
+      # skips trying to cache these folders
+      - BYPASS_PATH_PREFIXES=${FPL_BYPASS_PATH_PREFIXES:-/wp-admin,wp-includes}
+      - CACHE_RESPONSE_CODES=2XX,404,403
+      - |-
+        CADDY_GLOBAL_OPTIONS=
+        email ${FPL_WP_EMAIL:-myemail@sample.com}
+        auto_https disable_redirects
+      - |-
+        WORDPRESS_CONFIG_EXTRA=
+        define('WP_SITEURL', 'http://localhost:8099');
+        define('WP_HOME', 'http://localhost:8099');
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

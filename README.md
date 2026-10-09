@@ -1,16 +1,10 @@
-# WordPress + FrankenPHP Docker Image
+# WordPress + FrankenPHP + SQLite Docker Image
 
-An enterprise-grade WordPress image built for scale. It uses the new FrankenPHP server bundled with Caddy. Lightning-fast server side caching Caddy module.
+An enterprise-grade WordPress image built for scale. It uses the new FrankenPHP server bundled with Caddy. Lightning-fast server side caching Caddy module using SQLite as the database.
 
 ## Getting Started
 
-- [Docker Images](https://hub.docker.com/r/wpeverywhere/frankenwp "Docker Hub")
-
-### Examples
-
-- [Standard environment with MariaDB & Docker Compose](./examples/basic/compose.yaml)
-- [Debug with XDebug & Docker Compose](./examples/debug/compose.yaml)
-- [SQLite with Docker Compose](./examples/sqlite/compose.yaml)
+- [Docker Images](https://hub.docker.com/r/clutchlabsapp/frankenwplite "Docker Hub")
 
 ## Whats Included
 
@@ -45,10 +39,7 @@ An enterprise-grade WordPress image built for scale. It uses the new FrankenPHP 
 
 #### Wordpress
 
-- `DB_NAME`: The WordPress database name.
-- `DB_USER`: The WordPress database user.
-- `DB_PASSWORD`: The WordPress database password.
-- `DB_HOST`: The WordPress database host.
+- `DB_NAME`: The WordPress database name, the filename of the SQLite file.
 - `DB_TABLE_PREFIX`: The WordPress database table prefix.
 - `WP_DEBUG`: Turns on WordPress Debug.
 - `FORCE_HTTPS`: Tells WordPress to use https on requests. This is beneficial behind load balancer. Defaults to true.
