@@ -2,8 +2,6 @@ ARG WORDPRESS_VERSION=latest
 ARG PHP_VERSION=8.4
 ARG USER=www-data
 
-
-
 FROM dunglas/frankenphp:builder-php$PHP_VERSION AS builder
 
 # Copy xcaddy in the builder image
@@ -27,12 +25,12 @@ RUN CGO_ENABLED=1 \
 FROM wordpress:$WORDPRESS_VERSION AS wp
 FROM dunglas/frankenphp:php$PHP_VERSION AS base
 
-LABEL org.opencontainers.image.title=FrankenWP
-LABEL org.opencontainers.image.description="Optimized WordPress containers to run everywhere. Built with FrankenPHP & Caddy."
-LABEL org.opencontainers.image.url=https://wpeverywhere.com
-LABEL org.opencontainers.image.source=https://github.com/StephenMiracle/frankenwp
+LABEL org.opencontainers.image.title=FrankenWPlite
+LABEL org.opencontainers.image.description="Optimized WordPress containers to run everywhere. Built with FrankenPHP, SQLite & Caddy."
+LABEL org.opencontainers.image.url=https://clutchlabs.app
+LABEL org.opencontainers.image.source=https://github.com/clutchlabs/frankenwplite
 LABEL org.opencontainers.image.licenses=MIT
-LABEL org.opencontainers.image.vendor="Stephen Miracle"
+LABEL org.opencontainers.image.vendor="Danny Summerlin"
 
 
 # Replace the official binary by the one contained your custom modules
@@ -40,7 +38,6 @@ COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp
 ENV WP_DEBUG=${DEBUG:+1}
 ENV FORCE_HTTPS=0
 ENV PHP_INI_SCAN_DIR=$PHP_INI_DIR/conf.d
-
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -61,7 +58,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && apt-get clean
 
-
 # install the PHP extensions we need (https://make.wordpress.org/hosting/handbook/handbook/server-environment/#php-extensions)
 RUN install-php-extensions \
     bcmath \
@@ -74,14 +70,17 @@ RUN install-php-extensions \
     imagick/imagick@master \
     opcache
 
-
 RUN cp $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini
-COPY php.ini $PHP_INI_DIR/conf.d/wp.ini
+RUN { \
+    echo '[php]'; \
+    echo 'upload_max_filesize = 512M'; \
+    echo 'post_max_size = 512M'; \
+    } > $PHP_INI_DIR/conf.d/wp.ini
 
+# WordPress install
 COPY --from=wp /usr/src/wordpress /usr/src/wordpress
 COPY --from=wp /usr/local/etc/php/conf.d /usr/local/etc/php/conf.d/
 COPY --from=wp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
-
 
 # set recommended PHP.ini settings
 # see https://secure.php.net/manual/en/opcache.installation.php
@@ -107,23 +106,17 @@ RUN { \
     echo 'html_errors = Off'; \
     } > $PHP_INI_DIR/conf.d/error-logging.ini
 
-
 WORKDIR /var/www/html
 
 VOLUME /var/www/html/wp-content
 
-
 COPY wp-content/mu-plugins /usr/src/wordpress/wp-content/mu-plugins
 RUN mkdir -p /usr/src/wordpress/wp-content/cache
-
-
 
 RUN sed -i \
     -e 's/\[ "$1" = '\''php-fpm'\'' \]/\[\[ "$1" == frankenphp* \]\]/g' \
     -e 's/php-fpm/frankenphp/g' \
     /usr/local/bin/docker-entrypoint.sh
-
-
 
 # Add $_SERVER['ssl'] = true; when env USE_SSL = true is set to the wp-config.php file here: /usr/local/bin/wp-config-docker.php
 RUN sed -i 's/<?php/<?php if (!!getenv("FORCE_HTTPS")) { \$_SERVER["HTTPS"] = "on"; } define( "FS_METHOD", "direct" ); set_time_limit(300); /g' /usr/src/wordpress/wp-config-docker.php
@@ -145,6 +138,18 @@ RUN chown -R ${USER}:${USER} /data/caddy && \
     chown -R ${USER}:${USER} /var/www/html && \
     chown -R ${USER}:${USER} /usr/src/wordpress && \
     chown -R ${USER}:${USER} /usr/local/bin/docker-entrypoint.sh
+
+# Install SQLite
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 libsqlite3-dev wget
+
+# Install the SQLite plugin
+RUN wget https://downloads.wordpress.org/plugin/sqlite-database-integration.zip -O /usr/src/wordpress/sqlite-database-integration.zip && \
+    unzip /usr/src/wordpress/sqlite-database-integration.zip -d /var/www/html/wp-content/mu-plugins/ && \
+    rm /usr/src/wordpress/sqlite-database-integration.zip
+
+RUN  cp /var/www/html/wp-content/mu-plugins/sqlite-database-integration/db.copy /var/www/html/wp-content/db.php && \
+    sed -i 's/{SQLITE_IMPLEMENTATION_FOLDER_PATH}/\/var\/www\/html\/wp-content\/mu-plugins\/sqlite-database-integration/g' /var/www/html/wp-content/db.php && \
+    sed -i 's/{SQLITE_PLUGIN}/WP_PLUGIN_DIR\/SQLITE_MAIN_FILE/g' /var/www/html/wp-content/db.php
 
 USER $USER
 
