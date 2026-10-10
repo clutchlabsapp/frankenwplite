@@ -1,7 +1,11 @@
 {
-	local_certs
-	auto_https disable_redirects # This is required to avoid redirect loops when using a reverse proxy and cloud load balancers.
+	#local_certs
+	auto_https off # This is required to avoid redirect loops when using a reverse proxy and cloud load balancers.
 	{$CADDY_GLOBAL_OPTIONS}
+
+  servers {
+      trusted_proxies static private_ranges
+  }
 
 	frankenphp {
 		#worker /path/to/your/worker.php
@@ -20,7 +24,7 @@
 ## Need to set all hosts with port for the cloud.
 # You may not have the hostname being called due to dynamic IPs and load balancers.
 # Allowing all hosts on port 80 for health checks, local dev & cases where the hostname is unknown.
-{$SERVER_NAME:localhost} {
+localhost {
 	@static {
 		file
 		path *.ico *.css *.js *.gif *.jpg *.jpeg *.png *.svg *.woff
