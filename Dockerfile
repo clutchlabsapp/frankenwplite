@@ -3,6 +3,9 @@ ARG PHP_VERSION=8.4
 ARG USER=www-data
 
 FROM dunglas/frankenphp:builder-php$PHP_VERSION AS builder
+ARG WORDPRESS_VERSION
+ARG PHP_VERSION
+ARG USER
 
 # Copy xcaddy in the builder image
 COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
@@ -24,6 +27,10 @@ RUN CGO_ENABLED=1 \
 
 FROM wordpress:$WORDPRESS_VERSION AS wp
 FROM dunglas/frankenphp:php$PHP_VERSION AS base
+ARG WORDPRESS_VERSION
+ARG PHP_VERSION
+ARG USER
+ARG DEBUG
 
 LABEL org.opencontainers.image.title=FrankenWPlite
 LABEL org.opencontainers.image.description="Optimized WordPress containers to run everywhere. Built with FrankenPHP, SQLite & Caddy."
@@ -129,8 +136,8 @@ RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli
 COPY Caddyfile /etc/caddy/Caddyfile
 
 # Caddy requires an additional capability to bind to port 80 and 443
-RUN useradd -D ${USER} && \
-    setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp
+# RUN useradd -D ${USER} && \
+RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp
 
 # Caddy requires write access to /data/caddy and /config/caddy
 RUN chown -R ${USER}:${USER} /data/caddy && \
