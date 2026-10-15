@@ -1,6 +1,12 @@
 services:
   frankenwplite:
-    build: .
+    build:
+      context: .
+      args:
+        DNS_PROVIDER: $DNS_PROVIDER
+      tags:
+        - clutchlabsapp/frankenwplite:latest
+        - clutchlabsapp/frankenwplite:1.1
     volumes:
       - ./app:/var/www/html
     ports:
@@ -22,10 +28,19 @@ services:
       # skips trying to cache these folders
       - BYPASS_PATH_PREFIXES=${FPL_BYPASS_PATH_PREFIXES:-/wp-admin,wp-includes}
       - CACHE_RESPONSE_CODES=2XX,404,403
+      - DNS_PROVIDER=$DNS_PROVIDER
       - |-
         CADDY_GLOBAL_OPTIONS=
         email ${FPL_WP_EMAIL:-myemail@sample.com}
-        auto_https disable_redirects
+        tls {
+          dns $DNS_PROVIDER {
+            api_key $NAMECHEAP_API_KEY
+            user $NAMECHEAP_API_USER
+            api_endpoint https://api.namecheap.com/xml.response
+          }
+          propagation_delay 30s
+          propagation_timeout -1
+        }
       - |-
         WORDPRESS_CONFIG_EXTRA=
         define('WP_SITEURL', 'http://localhost:8099');

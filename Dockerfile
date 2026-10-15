@@ -1,29 +1,31 @@
 ARG WORDPRESS_VERSION=latest
 ARG PHP_VERSION=8.4
 ARG USER=www-data
+ARG DNS_PROVIDERS="cloudflare route53 digitalocean godaddy namecheap googleclouddns easydns dnsmadeeasy"
 
 FROM dunglas/frankenphp:builder-php$PHP_VERSION AS builder
-ARG WORDPRESS_VERSION
-ARG PHP_VERSION
-ARG USER
+ARG DNS_PROVIDERS
 
 # Copy xcaddy in the builder image
 COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
 
 COPY ./sidekick/middleware/cache ./cache
 
-RUN CGO_ENABLED=1 \
+# Build FrankenPHP with its own modules + one --with per DNS provider
+RUN set -eux; \
+    dns_args=""; \
+    for p in $DNS_PROVIDERS; do dns_args="$dns_args --with github.com/caddy-dns/$p"; done; \
+    CGO_ENABLED=1 \
     XCADDY_GO_BUILD_FLAGS="-ldflags='-w -s' -tags=nobadger,nomysql,nopgx" \
     CGO_CFLAGS=$(php-config --includes) \
     CGO_LDFLAGS="$(php-config --ldflags) $(php-config --libs)" \
     xcaddy build \
-    --output /usr/local/bin/frankenphp \
-    --with github.com/dunglas/frankenphp=./ \
-    --with github.com/dunglas/frankenphp/caddy=./caddy/ \
-    --with github.com/dunglas/caddy-cbrotli \
-    # Add extra Caddy modules here
-    --with github.com/clutchlabsapp/frankenwplite/sidekick/middleware/cache=./cache
-
+      --output /usr/local/bin/frankenphp \
+      --with github.com/dunglas/frankenphp=./ \
+      --with github.com/dunglas/frankenphp/caddy=./caddy/ \
+      --with github.com/dunglas/caddy-cbrotli \
+      --with github.com/clutchlabsapp/frankenwplite/sidekick/middleware/cache=./cache \
+      $dns_args
 
 FROM wordpress:$WORDPRESS_VERSION AS wp
 FROM dunglas/frankenphp:php$PHP_VERSION AS base
@@ -51,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ghostscript \
     git \
+    less \
     libcurl4-openssl-dev \
     libjpeg-dev \
     libmemcached-dev \
@@ -59,7 +62,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     libwebp-dev \
     libxml2-dev \
-    libzip-dev \
     libzip-dev \
     unzip \
     zlib1g-dev \
@@ -136,7 +138,6 @@ RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli
 COPY Caddyfile /etc/caddy/Caddyfile
 
 # Caddy requires an additional capability to bind to port 80 and 443
-# RUN useradd -D ${USER} && \
 RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp
 
 # Caddy requires write access to /data/caddy and /config/caddy
