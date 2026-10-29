@@ -3,15 +3,13 @@ ARG PHP_VERSION=8.4
 ARG USER=www-data
 ARG DNS_PROVIDERS="cloudflare route53 digitalocean godaddy namecheap googleclouddns easydns dnsmadeeasy"
 
+# ---------- 1. Build the custom FrankenPHP binary ----------
 FROM dunglas/frankenphp:builder-php$PHP_VERSION AS builder
 ARG DNS_PROVIDERS
 
-# Copy xcaddy in the builder image
 COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
-
 COPY ./sidekick/middleware/cache ./cache
 
-# Build FrankenPHP with its own modules + one --with per DNS provider
 RUN set -eux; \
     dns_args=""; \
     for p in $DNS_PROVIDERS; do dns_args="$dns_args --with github.com/caddy-dns/$p"; done; \
@@ -25,12 +23,38 @@ RUN set -eux; \
       --with github.com/dunglas/frankenphp/caddy=./caddy/ \
       --with github.com/dunglas/caddy-cbrotli \
       --with github.com/clutchlabsapp/frankenwplite/sidekick/middleware/cache=./cache \
-      $dns_args
+      $dns_args; \
+    # Set the port-80 capability HERE, so the final image doesn't store the binary twice
+    command -v setcap || (apt-get update && apt-get install -y --no-install-recommends libcap2-bin); \
+    setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp
 
+# ---------- 2. Downloads (tools used here never reach the final image) ----------
+FROM alpine:3 AS downloads
+RUN apk add --no-cache curl unzip
+WORKDIR /out
+RUN set -eux; \
+    curl -fsSL -o wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar; \
+    chmod +x wp-cli.phar; \
+    curl -fsSL -o sqlite.zip https://downloads.wordpress.org/plugin/sqlite-database-integration.zip; \
+    unzip -q sqlite.zip -d mu-plugins; \
+    rm sqlite.zip; \
+    cp mu-plugins/sqlite-database-integration/db.copy db.php; \
+    sed -i \
+      -e 's#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#/usr/src/wordpress/wp-content/mu-plugins/sqlite-database-integration#g' \
+      -e 's#{SQLITE_PLUGIN}#WP_PLUGIN_DIR/SQLITE_MAIN_FILE#g' \
+      db.php
+
+# ---------- 3. Patch WordPress files before copying them ----------
 FROM wordpress:$WORDPRESS_VERSION AS wp
+RUN sed -i \
+      -e 's/\[ "$1" = '\''php-fpm'\'' \]/\[\[ "$1" == frankenphp* \]\]/g' \
+      -e 's/php-fpm/frankenphp/g' \
+      /usr/local/bin/docker-entrypoint.sh && \
+    sed -i 's/<?php/<?php if (!!getenv("FORCE_HTTPS")) { \$_SERVER["HTTPS"] = "on"; } define( "FS_METHOD", "direct" ); set_time_limit(300); /g' \
+      /usr/src/wordpress/wp-config-docker.php
+
+# ---------- 4. Final image ----------
 FROM dunglas/frankenphp:php$PHP_VERSION AS base
-ARG WORDPRESS_VERSION
-ARG PHP_VERSION
 ARG USER
 ARG DEBUG
 
@@ -41,33 +65,13 @@ LABEL org.opencontainers.image.source=https://github.com/clutchlabs/frankenwplit
 LABEL org.opencontainers.image.licenses=MIT
 LABEL org.opencontainers.image.vendor="Danny Summerlin"
 
-
-# Replace the official binary by the one contained your custom modules
-COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp
 ENV WP_DEBUG=${DEBUG:+1}
 ENV FORCE_HTTPS=0
 ENV PHP_INI_SCAN_DIR=$PHP_INI_DIR/conf.d
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    ghostscript \
-    git \
-    less \
-    libcurl4-openssl-dev \
-    libjpeg-dev \
-    libmemcached-dev \
-    libnss3-tools \
-    libonig-dev \
-    libssl-dev \
-    libwebp-dev \
-    libxml2-dev \
-    libzip-dev \
-    unzip \
-    zlib1g-dev \
-    && apt-get clean
-
-# install the PHP extensions we need (https://make.wordpress.org/hosting/handbook/handbook/server-environment/#php-extensions)
+# No apt-get needed: the base already has curl + ca-certificates, and
+# install-php-extensions pulls in (and cleans up) whatever it needs to compile.
+# PDO SQLite is already built into the official PHP images.
 RUN install-php-extensions \
     bcmath \
     exif \
@@ -75,35 +79,23 @@ RUN install-php-extensions \
     intl \
     mysqli \
     zip \
-    # See https://github.com/Imagick/imagick/issues/640#issuecomment-2077206945
-    imagick/imagick@master \
     opcache
 
-RUN cp $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini
-RUN { \
+# All php.ini tweaks in one layer
+RUN set -eux; \
+    cp $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini; \
+    { \
     echo '[php]'; \
     echo 'upload_max_filesize = 512M'; \
     echo 'post_max_size = 512M'; \
-    } > $PHP_INI_DIR/conf.d/wp.ini
-
-# WordPress install
-COPY --from=wp /usr/src/wordpress /usr/src/wordpress
-COPY --from=wp /usr/local/etc/php/conf.d /usr/local/etc/php/conf.d/
-COPY --from=wp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
-
-# set recommended PHP.ini settings
-# see https://secure.php.net/manual/en/opcache.installation.php
-RUN set -eux; \
+    } > $PHP_INI_DIR/conf.d/wp.ini; \
     { \
     echo 'opcache.memory_consumption=128'; \
     echo 'opcache.interned_strings_buffer=8'; \
     echo 'opcache.max_accelerated_files=4000'; \
     echo 'opcache.revalidate_freq=2'; \
-    } > $PHP_INI_DIR/conf.d/opcache-recommended.ini
-# https://wordpress.org/support/article/editing-wp-config-php/#configure-error-logging
-RUN { \
-    # https://www.php.net/manual/en/errorfunc.constants.php
-    # https://github.com/docker-library/wordpress/issues/420#issuecomment-517839670
+    } > $PHP_INI_DIR/conf.d/opcache-recommended.ini; \
+    { \
     echo 'error_reporting = E_ERROR | E_WARNING | E_PARSE | E_CORE_ERROR | E_CORE_WARNING | E_COMPILE_ERROR | E_COMPILE_WARNING | E_RECOVERABLE_ERROR'; \
     echo 'display_errors = Off'; \
     echo 'display_startup_errors = Off'; \
@@ -115,49 +107,29 @@ RUN { \
     echo 'html_errors = Off'; \
     } > $PHP_INI_DIR/conf.d/error-logging.ini
 
-WORKDIR /var/www/html
-
-VOLUME /var/www/html/wp-content
-
-COPY wp-content/mu-plugins /usr/src/wordpress/wp-content/mu-plugins
-RUN mkdir -p /usr/src/wordpress/wp-content/cache
-
-RUN sed -i \
-    -e 's/\[ "$1" = '\''php-fpm'\'' \]/\[\[ "$1" == frankenphp* \]\]/g' \
-    -e 's/php-fpm/frankenphp/g' \
-    /usr/local/bin/docker-entrypoint.sh
-
-# Add $_SERVER['ssl'] = true; when env USE_SSL = true is set to the wp-config.php file here: /usr/local/bin/wp-config-docker.php
-RUN sed -i 's/<?php/<?php if (!!getenv("FORCE_HTTPS")) { \$_SERVER["HTTPS"] = "on"; } define( "FS_METHOD", "direct" ); set_time_limit(300); /g' /usr/src/wordpress/wp-config-docker.php
-
-# Adding WordPress CLI
-RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && \
-    chmod +x wp-cli.phar && \
-    mv wp-cli.phar /usr/local/bin/wp
-
+# Copy files with the right owner up front (a later `chown -R` would duplicate them)
+COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp
+COPY --from=wp /usr/local/etc/php/conf.d /usr/local/etc/php/conf.d/
+COPY --from=wp --chown=$USER:$USER /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
+COPY --from=wp --chown=$USER:$USER /usr/src/wordpress /usr/src/wordpress
+COPY --chown=$USER:$USER wp-content/mu-plugins /usr/src/wordpress/wp-content/mu-plugins
+COPY --from=downloads --chown=$USER:$USER /out/mu-plugins/ /usr/src/wordpress/wp-content/mu-plugins/
+COPY --from=downloads --chown=$USER:$USER /out/db.php /usr/src/wordpress/wp-content/db.php
+COPY --from=downloads /out/wp-cli.phar /usr/local/bin/wp
 COPY Caddyfile /etc/caddy/Caddyfile
 
-# Caddy requires an additional capability to bind to port 80 and 443
-RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp
+# Only small/empty folders are chowned here.
+# The WordPress image's conf.d includes an imagick loader; remove it since Imagick isn't installed.
+RUN rm -f /usr/local/etc/php/conf.d/docker-php-ext-imagick.ini && \
+    mkdir -p /usr/src/wordpress/wp-content/cache && \
+    chown -R $USER:$USER \
+      /usr/src/wordpress/wp-content/cache \
+      /data/caddy \
+      /config/caddy \
+      /var/www/html
 
-# Caddy requires write access to /data/caddy and /config/caddy
-RUN chown -R ${USER}:${USER} /data/caddy && \
-    chown -R ${USER}:${USER} /config/caddy && \
-    chown -R ${USER}:${USER} /var/www/html && \
-    chown -R ${USER}:${USER} /usr/src/wordpress && \
-    chown -R ${USER}:${USER} /usr/local/bin/docker-entrypoint.sh
-
-# Install SQLite
-RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 libsqlite3-dev wget
-
-# Install the SQLite plugin
-RUN wget https://downloads.wordpress.org/plugin/sqlite-database-integration.zip -O /usr/src/wordpress/sqlite-database-integration.zip && \
-    unzip /usr/src/wordpress/sqlite-database-integration.zip -d /usr/src/wordpress/wp-content/mu-plugins && \
-    rm /usr/src/wordpress/sqlite-database-integration.zip
-
-RUN  cp /usr/src/wordpress/wp-content/mu-plugins/sqlite-database-integration/db.copy /usr/src/wordpress/wp-content/db.php && \
-    sed -i 's/{SQLITE_IMPLEMENTATION_FOLDER_PATH}/\/usr\/src\/wordpress\/wp-content\/mu-plugins\/sqlite-database-integration/g' /usr/src/wordpress/wp-content/db.php && \
-    sed -i 's/{SQLITE_PLUGIN}/WP_PLUGIN_DIR\/SQLITE_MAIN_FILE/g' /usr/src/wordpress/wp-content/db.php
+WORKDIR /var/www/html
+VOLUME /var/www/html/wp-content
 
 USER $USER
 
